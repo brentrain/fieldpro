@@ -107,7 +107,23 @@ export default function InvoicesPage() {
           .select("*")
           .order("created_at", { ascending: false });
 
-        if (invoicesError) throw invoicesError;
+        if (invoicesError) {
+          // Check if it's a missing table error
+          if (
+            invoicesError.message?.includes("relation") ||
+            invoicesError.message?.includes("does not exist") ||
+            invoicesError.code === "42P01"
+          ) {
+            setError(
+              "Invoices table not found. Please run the SQL setup script in Supabase (see supabase_setup.sql file)."
+            );
+            setInvoices([]);
+          } else {
+            throw invoicesError;
+          }
+        } else {
+          setInvoices(invoicesData || []);
+        }
 
         // Fetch clients
         const { data: clientsData, error: clientsError } = await supabase
@@ -115,14 +131,54 @@ export default function InvoicesPage() {
           .select("*")
           .order("name");
 
-        if (clientsError) throw clientsError;
+        if (clientsError) {
+          console.error("Error fetching clients:", clientsError);
+          // Check if it's a missing table error
+          if (
+            clientsError.message?.includes("relation") ||
+            clientsError.message?.includes("does not exist") ||
+            clientsError.code === "42P01"
+          ) {
+            setError(
+              (prev) =>
+                (prev || "") +
+                " Clients table not found. Please run the SQL setup script in Supabase."
+            );
+            setClients([]);
+          } else if (
+            clientsError.message?.includes("permission") ||
+            clientsError.message?.includes("row-level security") ||
+            clientsError.code === "42501"
+          ) {
+            setError(
+              (prev) =>
+                (prev || "") +
+                " Permission denied accessing clients. Please check Row Level Security policies in Supabase."
+            );
+            setClients([]);
+          } else {
+            setError(
+              (prev) =>
+                (prev || "") +
+                ` Error loading clients: ${clientsError.message}`
+            );
+            setClients([]);
+          }
+        } else {
+          setClients(clientsData || []);
+        }
 
         // Fetch jobs
         const { data: jobsData, error: jobsError } = await supabase
           .from("jobs")
           .select("*");
 
-        if (jobsError) throw jobsError;
+        if (jobsError) {
+          console.error("Error fetching jobs:", jobsError);
+          setJobs([]);
+        } else {
+          setJobs(jobsData || []);
+        }
 
         // Fetch company profile
         const { data: companyData, error: companyError } = await supabase
@@ -131,17 +187,30 @@ export default function InvoicesPage() {
           .eq("user_id", user.id)
           .single();
 
-        if (companyError && companyError.code !== "PGRST116") {
-          console.error("Error fetching company profile:", companyError);
+        if (companyError) {
+          if (companyError.code === "PGRST116") {
+            // No company profile yet, that's okay
+            setCompanyProfile(null);
+          } else if (
+            companyError.message?.includes("relation") ||
+            companyError.message?.includes("does not exist") ||
+            companyError.code === "42P01"
+          ) {
+            // Table doesn't exist yet, that's okay for now
+            setCompanyProfile(null);
+          } else {
+            console.error("Error fetching company profile:", companyError);
+            setCompanyProfile(null);
+          }
+        } else {
+          setCompanyProfile(companyData || null);
         }
-
-        setInvoices(invoicesData || []);
-        setClients(clientsData || []);
-        setJobs(jobsData || []);
-        setCompanyProfile(companyData || null);
       } catch (err: any) {
         console.error("Error fetching data:", err);
-        setError(err.message || "Failed to load data.");
+        setError(
+          err.message ||
+            "Failed to load data. Please check that all database tables are set up correctly."
+        );
       } finally {
         setLoading(false);
       }
@@ -347,14 +416,31 @@ export default function InvoicesPage() {
                   onChange={(e) => setSelectedClientId(e.target.value)}
                   className="mt-1 w-full rounded-md border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   required
+                  disabled={clients.length === 0}
                 >
-                  <option value="">Select a client</option>
+                  <option value="">
+                    {clients.length === 0
+                      ? "No clients available - Add clients first"
+                      : "Select a client"}
+                  </option>
                   {clients.map((client) => (
                     <option key={client.id} value={client.id}>
                       {client.name}
                     </option>
                   ))}
                 </select>
+                {clients.length === 0 && (
+                  <p className="mt-1 text-xs text-yellow-400">
+                    No clients found. Go to{" "}
+                    <a
+                      href="/clients"
+                      className="underline hover:text-yellow-300"
+                    >
+                      Clients page
+                    </a>{" "}
+                    to add clients first.
+                  </p>
+                )}
               </div>
 
               <div>

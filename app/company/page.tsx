@@ -19,6 +19,7 @@ type CompanyProfile = {
   paypal_link: string | null;
   stripe_link: string | null;
   venmo_link: string | null;
+  lemonsqueezy_link: string | null;
 };
 
 export default function CompanyPage() {
@@ -44,6 +45,7 @@ export default function CompanyPage() {
     paypal_link: "",
     stripe_link: "",
     venmo_link: "",
+    lemonsqueezy_link: "",
   });
 
   useEffect(() => {
@@ -123,6 +125,7 @@ export default function CompanyPage() {
             paypal_link: formData.paypal_link || null,
             stripe_link: formData.stripe_link || null,
             venmo_link: formData.venmo_link || null,
+            lemonsqueezy_link: formData.lemonsqueezy_link || null,
           },
           {
             onConflict: "user_id",
@@ -362,6 +365,24 @@ export default function CompanyPage() {
                 className="mt-1 w-full rounded-md border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 placeholder="https://venmo.com/yourname"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-white">
+                LemonSqueezy Link
+              </label>
+              <input
+                type="url"
+                value={formData.lemonsqueezy_link || ""}
+                onChange={(e) =>
+                  setFormData({ ...formData, lemonsqueezy_link: e.target.value })
+                }
+                className="mt-1 w-full rounded-md border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="https://yourstore.lemonsqueezy.com/checkout/..."
+              />
+              <p className="mt-1 text-xs text-white/60">
+                Your LemonSqueezy checkout link (will be shown as "Pay Now" button)
+              </p>
             </div>
           </div>
         </div>

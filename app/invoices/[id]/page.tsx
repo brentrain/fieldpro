@@ -45,6 +45,7 @@ type CompanyProfile = {
   paypal_link: string | null;
   stripe_link: string | null;
   venmo_link: string | null;
+  lemonsqueezy_link: string | null;
 };
 
 export default function InvoiceDetailPage() {
@@ -62,6 +63,7 @@ export default function InvoiceDetailPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [sendingText, setSendingText] = useState(false);
 
   useEffect(() => {
     const fetchInvoice = async () => {
@@ -85,7 +87,21 @@ export default function InvoiceDetailPage() {
           .eq("id", invoiceId)
           .single();
 
-        if (invoiceError) throw invoiceError;
+        if (invoiceError) {
+          // Check if it's a missing table error
+          if (
+            invoiceError.message?.includes("relation") ||
+            invoiceError.message?.includes("does not exist") ||
+            invoiceError.code === "42P01"
+          ) {
+            setError(
+              "Invoices table not found. Please run the SQL setup script in Supabase (see supabase_setup.sql file)."
+            );
+            setLoading(false);
+            return;
+          }
+          throw invoiceError;
+        }
 
         // Fetch client
         const { data: clientData, error: clientError } = await supabase
@@ -102,7 +118,20 @@ export default function InvoiceDetailPage() {
           .select("*")
           .eq("invoice_id", invoiceId);
 
-        if (itemsError) throw itemsError;
+        if (itemsError) {
+          // If invoice_items table doesn't exist, just set empty array
+          if (
+            itemsError.message?.includes("relation") ||
+            itemsError.message?.includes("does not exist") ||
+            itemsError.code === "42P01"
+          ) {
+            setInvoiceItems([]);
+          } else {
+            throw itemsError;
+          }
+        } else {
+          setInvoiceItems(itemsData || []);
+        }
 
         // Fetch company profile
         const { data: companyData, error: companyError } = await supabase
@@ -111,17 +140,33 @@ export default function InvoiceDetailPage() {
           .eq("user_id", user.id)
           .single();
 
-        if (companyError && companyError.code !== "PGRST116") {
-          console.error("Error fetching company profile:", companyError);
+        if (companyError) {
+          if (companyError.code === "PGRST116") {
+            // No company profile yet, that's okay
+            setCompanyProfile(null);
+          } else if (
+            companyError.message?.includes("relation") ||
+            companyError.message?.includes("does not exist") ||
+            companyError.code === "42P01"
+          ) {
+            // Table doesn't exist yet, that's okay for now
+            setCompanyProfile(null);
+          } else {
+            console.error("Error fetching company profile:", companyError);
+            setCompanyProfile(null);
+          }
+        } else {
+          setCompanyProfile(companyData || null);
         }
 
         setInvoice(invoiceData);
         setClient(clientData);
-        setInvoiceItems(itemsData || []);
-        setCompanyProfile(companyData || null);
       } catch (err: any) {
         console.error("Error fetching invoice:", err);
-        setError(err.message || "Failed to load invoice.");
+        setError(
+          err.message ||
+            "Failed to load invoice. Please check that all database tables are set up correctly."
+        );
       } finally {
         setLoading(false);
       }
@@ -176,20 +221,70 @@ export default function InvoiceDetailPage() {
     setError(null);
 
     try {
-      // This would integrate with your email service (Resend)
-      // For now, we'll create a mailto link fallback
-      const subject = encodeURIComponent(
-        `Invoice ${invoice.invoice_number} from ${companyProfile?.company_name || "Your Company"}`
-      );
-      const body = encodeURIComponent(
-        `Please find attached invoice ${invoice.invoice_number} for ${formatCurrency(invoice.total_cents)}.\n\nDue date: ${formatDate(invoice.due_date)}\n\nThank you!`
-      );
+      // Get the user's access token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error("You must be logged in to send invoices.");
+      }
 
-      window.location.href = `mailto:${client.email}?subject=${subject}&body=${body}`;
+      const response = await fetch("/api/send-invoice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          invoiceId: invoice.id,
+          clientEmail: client.email,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to send email");
+      }
+
+      alert(`Invoice sent successfully to ${client.email}!`);
     } catch (err: any) {
-      setError(err.message || "Failed to send email.");
+      setError(err.message || "Failed to send email. Make sure RESEND_API_KEY is set in your environment variables.");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleSendText = () => {
+    if (!client?.phone || !invoice) {
+      setError("Client phone number is required to send invoice via text.");
+      return;
+    }
+
+    setSendingText(true);
+    setError(null);
+
+    try {
+      // Create SMS link with invoice URL
+      const invoiceUrl = `${window.location.origin}/invoices/${invoice.id}`;
+      const message = encodeURIComponent(
+        `Invoice ${invoice.invoice_number} from ${companyProfile?.company_name || "Your Company"}\n\n` +
+        `Amount: ${formatCurrency(invoice.total_cents)}\n` +
+        `Due: ${formatDate(invoice.due_date)}\n\n` +
+        `View invoice: ${invoiceUrl}`
+      );
+
+      // Clean phone number (remove non-digits except +)
+      const cleanPhone = client.phone.replace(/[^\d+]/g, "");
+      
+      // Open SMS app
+      window.location.href = `sms:${cleanPhone}?body=${message}`;
+      
+      // Reset after a moment
+      setTimeout(() => {
+        setSendingText(false);
+      }, 1000);
+    } catch (err: any) {
+      setError(err.message || "Failed to open text message.");
+      setSendingText(false);
     }
   };
 
@@ -246,10 +341,24 @@ export default function InvoiceDetailPage() {
             <button
               onClick={handleSendEmail}
               disabled={sending}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded-md bg-green-600 px-6 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 shadow-lg"
             >
-              {sending ? "Sending..." : "Send Email"}
+              {sending ? "Sending..." : "📧 Send Email"}
             </button>
+          )}
+          {client.phone && (
+            <button
+              onClick={handleSendText}
+              disabled={sendingText}
+              className="rounded-md bg-blue-600 px-6 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 shadow-lg"
+            >
+              {sendingText ? "Opening..." : "💬 Send Text"}
+            </button>
+          )}
+          {!client.email && !client.phone && (
+            <div className="rounded-md bg-yellow-500/20 border border-yellow-500/50 px-4 py-2 text-sm text-yellow-200">
+              ⚠️ No client email/phone - add in Clients page
+            </div>
           )}
         </div>
       </div>
@@ -382,23 +491,89 @@ export default function InvoiceDetailPage() {
           </div>
         </div>
 
-        {/* Payment Links */}
-        {(companyProfile?.paypal_link ||
+        {/* Pay Now Button - Prominent - Always Visible */}
+        <div className="mb-8 text-center">
+          <div className="inline-block rounded-lg border-2 border-green-500 bg-green-50 p-6 shadow-lg">
+            <p className="mb-4 text-lg font-semibold text-gray-900">
+              Amount Due: {formatCurrency(invoice.total_cents)}
+            </p>
+            {(companyProfile?.lemonsqueezy_link ||
+              companyProfile?.paypal_link ||
+              companyProfile?.stripe_link ||
+              companyProfile?.venmo_link) ? (
+              <div className="flex flex-wrap justify-center gap-3">
+                {companyProfile.lemonsqueezy_link && (
+                  <a
+                    href={companyProfile.lemonsqueezy_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-lg bg-green-600 px-8 py-4 text-lg font-bold text-white shadow-lg transition hover:bg-green-700 hover:shadow-xl"
+                  >
+                    💳 Pay Now
+                  </a>
+                )}
+                {!companyProfile?.lemonsqueezy_link && companyProfile?.stripe_link && (
+                  <a
+                    href={companyProfile.stripe_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-lg bg-purple-600 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-purple-700 hover:shadow-lg"
+                  >
+                    💳 Pay Now with Stripe
+                  </a>
+                )}
+                {!companyProfile?.lemonsqueezy_link && companyProfile?.paypal_link && (
+                  <a
+                    href={companyProfile.paypal_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-lg bg-blue-600 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-blue-700 hover:shadow-lg"
+                  >
+                    💳 Pay Now with PayPal
+                  </a>
+                )}
+                {!companyProfile?.lemonsqueezy_link && companyProfile?.venmo_link && (
+                  <a
+                    href={companyProfile.venmo_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-lg bg-blue-500 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-blue-600 hover:shadow-lg"
+                  >
+                    💳 Pay Now with Venmo
+                  </a>
+                )}
+              </div>
+            ) : (
+              <p className="text-red-600 font-medium">
+                Payment link not configured. Please contact {companyProfile?.email || "the sender"} to arrange payment.
+              </p>
+            )}
+            {invoice.status !== "paid" && (
+              <p className="mt-4 text-sm text-gray-600">
+                Due: {formatDate(invoice.due_date)}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Additional Payment Options */}
+        {(companyProfile?.lemonsqueezy_link ||
+          companyProfile?.paypal_link ||
           companyProfile?.stripe_link ||
           companyProfile?.venmo_link) && (
           <div className="mb-8 rounded-lg border border-gray-200 bg-gray-50 p-4">
             <p className="mb-3 text-sm font-semibold text-gray-700">
-              Payment Options:
+              Other Payment Options:
             </p>
             <div className="flex flex-wrap gap-2">
-              {companyProfile.paypal_link && (
+              {companyProfile.lemonsqueezy_link && (
                 <a
-                  href={companyProfile.paypal_link}
+                  href={companyProfile.lemonsqueezy_link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
                 >
-                  Pay with PayPal
+                  LemonSqueezy
                 </a>
               )}
               {companyProfile.stripe_link && (
@@ -408,7 +583,17 @@ export default function InvoiceDetailPage() {
                   rel="noopener noreferrer"
                   className="rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700"
                 >
-                  Pay with Stripe
+                  Stripe
+                </a>
+              )}
+              {companyProfile.paypal_link && (
+                <a
+                  href={companyProfile.paypal_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  PayPal
                 </a>
               )}
               {companyProfile.venmo_link && (
@@ -418,7 +603,7 @@ export default function InvoiceDetailPage() {
                   rel="noopener noreferrer"
                   className="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600"
                 >
-                  Pay with Venmo
+                  Venmo
                 </a>
               )}
             </div>

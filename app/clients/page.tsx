@@ -22,6 +22,8 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
 
@@ -33,6 +35,18 @@ export default function ClientsPage() {
   const [city, setCity] = useState("");
   const [state, setState] = useState("");
   const [zipCode, setZipCode] = useState("");
+
+  const resetForm = () => {
+    setName("");
+    setPhone("");
+    setEmail("");
+    setAddress("");
+    setCity("");
+    setState("");
+    setZipCode("");
+    setEditingId(null);
+    setEditing(false);
+  };
 
   useEffect(() => {
     const fetchClients = async () => {
@@ -55,10 +69,47 @@ export default function ClientsPage() {
           .from("clients")
           .select("*"); // no order() so we don't depend on created_at
 
-        if (error) {
-          console.error("Supabase error loading clients:", error);
-          // Show the real message so we know what's wrong
-          setError(error.message || "Failed to load clients.");
+      if (error) {
+        console.error("Supabase error loading clients:", error);
+        
+        // Provide more helpful error messages
+        if (
+          error.message?.includes("relation") ||
+          error.message?.includes("does not exist") ||
+          error.message?.includes("schema cache") ||
+          error.code === "42P01"
+        ) {
+          setError(
+            "❌ CLIENTS TABLE NOT FOUND\n\n" +
+            "The database table doesn't exist. To fix this:\n\n" +
+            "1. Go to Supabase Dashboard → SQL Editor\n" +
+            "2. Open 'FIX_CLIENTS_TABLE.sql' from this project\n" +
+            "3. Copy the entire script and paste into SQL Editor\n" +
+            "4. Click 'Run'\n" +
+            "5. Wait 10 seconds, then refresh this page"
+          );
+          setClients([]);
+        } else if (
+          error.message?.includes("permission") ||
+          error.message?.includes("row-level security") ||
+          error.message?.includes("RLS") ||
+          error.code === "42501"
+        ) {
+          setError(
+            "❌ PERMISSION DENIED\n\n" +
+            "Row Level Security is blocking access. To fix:\n\n" +
+            "1. Go to Supabase Dashboard → SQL Editor\n" +
+            "2. Run 'FIX_CLIENTS_TABLE.sql'\n" +
+            "3. This will set up the correct permissions"
+          );
+          setClients([]);
+        } else {
+          setError(
+            "❌ ERROR: " + (error.message || "Failed to load clients.") + "\n\n" +
+            "Check the browser console (F12) for details."
+          );
+          setClients([]);
+        }
         } else {
           setClients(data || []);
         }
@@ -81,6 +132,20 @@ export default function ClientsPage() {
     );
   }
 
+  const handleEditClient = (client: Client) => {
+    setName(client.name);
+    setPhone(client.phone || "");
+    setEmail(client.email || "");
+    setAddress(client.address || "");
+    setCity(client.city || "");
+    setState(client.state || "");
+    setZipCode(client.zip_code || "");
+    setEditingId(client.id);
+    setEditing(true);
+    // Scroll to form
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const handleAddClient = async (e: FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -89,32 +154,91 @@ export default function ClientsPage() {
     setError(null);
 
     try {
-      const { data, error } = await supabase
-        .from("clients")
-        .insert({
-          name: name.trim(),
-          phone: phone.trim() || null,
-          email: email.trim() || null,
-          address: address.trim() || null,
-          city: city.trim() || null,
-          state: state.trim() || null,
-          zip_code: zipCode.trim() || null,
-        })
-        .select("*")
-        .single();
+      const clientData = {
+        name: name.trim(),
+        phone: phone.trim() || null,
+        email: email.trim() || null,
+        address: address.trim() || null,
+        city: city.trim() || null,
+        state: state.trim() || null,
+        zip_code: zipCode.trim() || null,
+      };
+
+      let data, error;
+      
+      if (editingId) {
+        // Update existing client
+        ({ data, error } = await supabase
+          .from("clients")
+          .update(clientData)
+          .eq("id", editingId)
+          .select("*")
+          .single());
+      } else {
+        // Insert new client
+        ({ data, error } = await supabase
+          .from("clients")
+          .insert(clientData)
+          .select("*")
+          .single());
+      }
 
       if (error) {
         console.error("Supabase error adding client:", error);
-        setError(error.message || "Failed to add client.");
+        
+        // Provide more helpful error messages
+        if (
+          error.message?.includes("relation") ||
+          error.message?.includes("does not exist") ||
+          error.message?.includes("schema cache") ||
+          error.code === "42P01"
+        ) {
+          setError(
+            "❌ CLIENTS TABLE NOT FOUND\n\n" +
+            "The database table doesn't exist. To fix:\n\n" +
+            "1. Go to Supabase Dashboard → SQL Editor\n" +
+            "2. Open 'FIX_CLIENTS_TABLE.sql' from this project\n" +
+            "3. Copy the entire script and paste into SQL Editor\n" +
+            "4. Click 'Run'\n" +
+            "5. Wait 10 seconds, then try again"
+          );
+        } else if (
+          error.message?.includes("permission") ||
+          error.message?.includes("row-level security") ||
+          error.message?.includes("RLS") ||
+          error.code === "42501"
+        ) {
+          setError(
+            "❌ PERMISSION DENIED\n\n" +
+            "You don't have permission to add clients. To fix:\n\n" +
+            "1. Go to Supabase Dashboard → SQL Editor\n" +
+            "2. Run 'FIX_CLIENTS_TABLE.sql'\n" +
+            "3. This will fix the permissions"
+          );
+        } else if (error.message?.includes("violates foreign key")) {
+          setError(
+            "❌ DATABASE ERROR\n\n" +
+            "Database constraint error. Please check that all required tables exist.\n\n" +
+            "Run 'COMPLETE_DATABASE_SETUP.sql' in Supabase SQL Editor."
+          );
+        } else {
+          setError(
+            "❌ ERROR: " + (error.message || "Failed to add client.") + "\n\n" +
+            "Check the browser console (F12) for details."
+          );
+        }
       } else if (data) {
-        setClients((prev) => [data, ...prev]);
-        setName("");
-        setPhone("");
-        setEmail("");
-        setAddress("");
-        setCity("");
-        setState("");
-        setZipCode("");
+        if (editingId) {
+          // Update existing client in the list
+          setClients((prev) =>
+            prev.map((c) => (c.id === editingId ? data : c))
+          );
+          resetForm();
+        } else {
+          // Add new client
+          setClients((prev) => [data, ...prev]);
+          resetForm();
+        }
       }
     } catch (err: any) {
       console.error("Unexpected error adding client:", err);
@@ -156,14 +280,27 @@ export default function ClientsPage() {
 
       {/* Error display */}
       {error && (
-        <div className="rounded-md border border-red-300/50 bg-red-500/20 p-3 text-xs text-white">
-          {error}
+        <div className="rounded-md border-2 border-red-400/50 bg-red-500/30 p-4 text-sm text-white">
+          <div className="font-semibold mb-2">⚠️ Database Setup Required</div>
+          <pre className="whitespace-pre-wrap text-xs font-mono">{error}</pre>
         </div>
       )}
 
-      {/* Add Client Form */}
+      {/* Add/Edit Client Form */}
       <div className="rounded-lg border border-slate-700 bg-slate-800/90 p-4 shadow-sm backdrop-blur">
-        <h2 className="text-sm font-semibold text-white">Add Client</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-white">
+            {editing ? "Edit Client" : "Add Client"}
+          </h2>
+          {editing && (
+            <button
+              onClick={resetForm}
+              className="text-xs text-white/60 hover:text-white"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
 
         <form
           onSubmit={handleAddClient}
@@ -259,13 +396,22 @@ export default function ClientsPage() {
             />
           </div>
 
-          <div className="md:col-span-2 flex justify-end">
+          <div className="md:col-span-2 flex justify-end gap-2">
+            {editing && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-md bg-slate-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+            )}
             <button
               type="submit"
               disabled={adding}
               className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {adding ? "Adding..." : "Add Client"}
+              {adding ? (editing ? "Updating..." : "Adding...") : (editing ? "Update Client" : "Add Client")}
             </button>
           </div>
         </form>
@@ -315,6 +461,13 @@ export default function ClientsPage() {
                       )}
                     </div>
                     <div className="ml-4 flex gap-2">
+                      <button
+                        onClick={() => handleEditClient(client)}
+                        className="rounded-md bg-yellow-600/20 px-3 py-1.5 text-xs text-yellow-400 hover:bg-yellow-600/30 transition"
+                        title="Edit"
+                      >
+                        ✏️
+                      </button>
                       {client.phone && (
                         <>
                           <a
